@@ -1,3 +1,10 @@
+# ── LLM mode ──────────────────────────────────────────────────────────────────
+# Stub mode (default):   PYTHONPATH=. python3 main.py
+# Real LLM mode:         USE_REAL_LLM=true PYTHONPATH=. python3 main.py
+#   → Requires Ollama running with Mistral pulled (ollama pull mistral)
+#   → Set NUM_USERS = 10 below for real LLM mode — APIs can't handle 1000 threads
+# ──────────────────────────────────────────────────────────────────────────────
+
 from workers.gpu_worker import GPUWorker
 from workers.failure_simulator import FailureSimulator
 from lb.load_balancer import LoadBalancer

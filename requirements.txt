@@ -1,0 +1,4 @@
+chromadb
+pypdf
+requests
+# anthropic  # alternative to Ollama — pip install anthropic, then set LLM_BACKEND=anthropic
