@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(PYTHONPATH=. python main.py)",
-      "Bash(grep -E \"^=|Strategy|round_robin|least_conn|load_aware|^$|---\")"
-    ]
-  }
-}

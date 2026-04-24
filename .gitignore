@@ -38,3 +38,9 @@ models/
 # Logs
 *.log
 logs/
+
+# ChromaDB persistent vector store (built locally from PDFs)
+rag/chroma_db/
+
+# Claude Code settings
+.claude/
