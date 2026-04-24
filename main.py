@@ -1,9 +1,13 @@
 # ── LLM mode ──────────────────────────────────────────────────────────────────
-# Stub mode (default):   PYTHONPATH=. python3 main.py
-# Real LLM mode:         USE_REAL_LLM=true PYTHONPATH=. python3 main.py
-#   → Requires Ollama running with Mistral pulled (ollama pull mistral)
-#   → Set NUM_USERS = 10 below for real LLM mode — APIs can't handle 1000 threads
+# Stub mode (default):   PYTHONPATH=. python main.py
+# Real Groq mode:        USE_REAL_LLM=true PYTHONPATH=. python main.py
+#   → Requires GROQ_API_KEY in .env (already configured)
+#   → Set NUM_USERS = 5 for real LLM mode — Groq rate limits can't handle 1000
+#   → Model: llama3-8b-8192 (override with GROQ_MODEL env var)
 # ──────────────────────────────────────────────────────────────────────────────
+
+from dotenv import load_dotenv
+load_dotenv()
 
 from workers.gpu_worker import GPUWorker
 from workers.failure_simulator import FailureSimulator
@@ -11,7 +15,7 @@ from lb.load_balancer import LoadBalancer
 from master.scheduler import Scheduler
 from client.load_generator import run_load_test
 
-NUM_USERS = 1000
+NUM_USERS = 50
 NUM_WORKERS = 4
 
 def main():
