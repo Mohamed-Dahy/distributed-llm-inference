@@ -1,10 +1,11 @@
 from workers.gpu_worker import GPUWorker
+from workers.failure_simulator import FailureSimulator
 from lb.load_balancer import LoadBalancer
 from master.scheduler import Scheduler
 from client.load_generator import run_load_test
 
 NUM_USERS = 1000
-NUM_WORKERS = 100
+NUM_WORKERS = 4
 
 def main():
     strategies = ['round_robin', 'least_connections', 'load_aware']
@@ -13,8 +14,11 @@ def main():
     for strategy in strategies:
         workers = [GPUWorker(i) for i in range(NUM_WORKERS)]
         lb = LoadBalancer(workers, strategy=strategy)
-        lb.remove_worker(0)  # Simulate one worker going down
-  
+        lb.remove_worker(0)  # Simulate one worker already down at start
+
+        sim = FailureSimulator(workers, failure_delay=0.1, num_failures=2)
+        sim.start()
+
         scheduler = Scheduler(lb)
         print(f"\n--- Running strategy: {strategy} ---")
         stats = run_load_test(scheduler, num_users=NUM_USERS, label=strategy)
