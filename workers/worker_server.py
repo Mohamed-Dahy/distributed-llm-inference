@@ -57,6 +57,7 @@ def stats():
         "active_requests": worker.active_requests,
         "total_requests": worker.total_requests,
         "avg_latency": round(worker.avg_latency, 3),
+        "gpu_utilization": worker.gpu_utilization,
     }
 
 

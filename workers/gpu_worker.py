@@ -5,14 +5,20 @@ from rag.retriever import retrieve_context
 from common.models import WorkerDeadException
 
 class GPUWorker:
-    def __init__(self, id):
+    def __init__(self, id, max_capacity=10):
         self.id = id
         self.is_alive = True
         self.active_requests = 0
         self.total_requests = 0
         self.avg_latency = 0.2
         self.failed_requests = 0
+        self.max_capacity = max_capacity
         self._lock = threading.Lock()
+
+    @property
+    def gpu_utilization(self):
+        util = self.active_requests / self.max_capacity * 100
+        return round(max(0.0, min(util, 100.0)), 1)
 
     def process(self, request):
         if not self.is_alive:
@@ -50,3 +56,9 @@ class GPUWorker:
     def simulate_failure(self):
         self.is_alive = False
         print(f"[FAILURE] Worker {self.id} has gone down!")
+
+    def revive(self):
+        with self._lock:
+            self.active_requests = 0
+        self.is_alive = True
+        print(f"[RECOVERY] Worker {self.id} is back ONLINE")

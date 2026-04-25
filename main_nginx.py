@@ -65,7 +65,8 @@ class HTTPPerformanceMonitor:
                         f"Status: {d['status']} | "
                         f"Active: {d['active_requests']} req | "
                         f"Total: {d['total_requests']} req | "
-                        f"Avg Latency: {d['avg_latency']}s"
+                        f"Avg Latency: {d['avg_latency']}s | "
+                        f"GPU: {d['gpu_utilization']}%"
                     )
                 except Exception:
                     print(f"[Monitor] Worker on port {port} -- unreachable")
@@ -108,14 +109,14 @@ def main():
 
     print("\n[Main] All workers ready. Starting NGINX load test...\n")
     print("NOTE: Make sure NGINX is running with:")
-    print("  C:\\nginx-1.30.0\\nginx.exe -c <absolute-path>\\nginx\\nginx.conf\n")
+    print("  nginx -c $(pwd)/nginx/nginx.conf\n")
 
     heartbeat = HTTPHeartbeatMonitor(ports, interval=2)
     monitor = HTTPPerformanceMonitor(ports, interval=5)
     heartbeat.start()
     monitor.start()
 
-    run_http_load_test(num_users=40, label="nginx_round_robin")
+    run_http_load_test(num_users=1000, label="nginx_round_robin")
 
     heartbeat.stop()
     monitor.stop()
