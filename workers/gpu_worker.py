@@ -9,6 +9,7 @@ class GPUWorker:
         self.id = id
         self.is_alive = True
         self.active_requests = 0
+        self.total_requests = 0
         self.avg_latency = 0.2
         self.failed_requests = 0
         self._lock = threading.Lock()
@@ -32,6 +33,7 @@ class GPUWorker:
 
             with self._lock:
                 self.active_requests -= 1
+                self.total_requests += 1
                 self.avg_latency = (self.avg_latency + latency) / 2
 
             return {
