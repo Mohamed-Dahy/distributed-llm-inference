@@ -27,7 +27,7 @@ SAMPLE_QUERIES = [
 
 def simulate_user(scheduler, user_id, results, lock):
     query = SAMPLE_QUERIES[user_id % len(SAMPLE_QUERIES)]
-    request = Request(id=user_id, query=f"Query {user_id}")
+    request = Request(id=user_id, query=query)
     try:
         response = scheduler.handle_request(request)
     except Exception:

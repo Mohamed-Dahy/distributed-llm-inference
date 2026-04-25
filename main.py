@@ -13,9 +13,11 @@ from workers.gpu_worker import GPUWorker
 from workers.failure_simulator import FailureSimulator
 from lb.load_balancer import LoadBalancer
 from master.scheduler import Scheduler
+from master.monitor import PerformanceMonitor
+from master.heartbeat import HeartbeatMonitor
 from client.load_generator import run_load_test
 
-NUM_USERS = 50
+NUM_USERS = 5
 NUM_WORKERS = 4
 
 def main():
@@ -31,9 +33,17 @@ def main():
         sim.start()
 
         scheduler = Scheduler(lb)
+        monitor = PerformanceMonitor(workers, interval=5)
+        heartbeat = HeartbeatMonitor(workers, interval=2)
+        monitor.start()
+        heartbeat.start()
+
         print(f"\n--- Running strategy: {strategy} ---")
         stats = run_load_test(scheduler, num_users=NUM_USERS, label=strategy)
         all_stats.append(stats)
+
+        monitor.stop()
+        heartbeat.stop()
 
     print()
     print("=" * 60)
