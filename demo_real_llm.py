@@ -41,7 +41,7 @@ def simulate_user(scheduler, user_id, results, lock):
 
 
 def main():
-    workers = [GPUWorker(i) for i in range(NUM_WORKERS)]
+    workers = [GPUWorker(i, max_capacity=NUM_USERS) for i in range(NUM_WORKERS)]
     lb = LoadBalancer(workers, strategy='round_robin')
     scheduler = Scheduler(lb)
 

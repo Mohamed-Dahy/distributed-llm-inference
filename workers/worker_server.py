@@ -26,7 +26,8 @@ class QueryResponse(BaseModel):
 
 app = FastAPI()
 worker_id = int(sys.argv[1])
-worker = GPUWorker(worker_id)
+max_capacity = int(os.environ.get("MAX_CAPACITY", 500))
+worker = GPUWorker(worker_id, max_capacity=max_capacity)
 
 
 @app.post("/process", response_model=QueryResponse)
@@ -57,6 +58,7 @@ def stats():
         "active_requests": worker.active_requests,
         "total_requests": worker.total_requests,
         "avg_latency": round(worker.avg_latency, 3),
+        "gpu_utilization": worker.gpu_utilization,
     }
 
 

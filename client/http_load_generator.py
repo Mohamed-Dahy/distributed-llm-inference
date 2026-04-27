@@ -15,7 +15,7 @@ def simulate_http_user(user_id, results, lock):
         response = httpx.post(
             "http://127.0.0.1:8080/process",
             json=payload,
-            timeout=30.0,
+            timeout=60.0,
         )
         data = response.json()
         latency = time.time() - start

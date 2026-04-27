@@ -11,6 +11,9 @@ import httpx
 
 from client.http_load_generator import run_http_load_test
 
+NUM_USERS = 50
+WORKER_PORTS = [8001, 8002, 8003, 8004]
+
 
 class HTTPHeartbeatMonitor:
     def __init__(self, ports, interval=2):
@@ -48,28 +51,34 @@ class HTTPPerformanceMonitor:
         self.ports = ports
         self.interval = interval
         self.running = True
+        self._start_time = time.time()
 
     def start(self):
+        self._start_time = time.time()
         t = threading.Thread(target=self._report, daemon=True)
         t.start()
 
     def _report(self):
         while self.running:
-            print(f"\n[Monitor] -------- System Performance --------")
+            elapsed = time.time() - self._start_time
+            lines = [
+                f"\n[Monitor] ──── System Performance  @{elapsed:5.1f}s ────",
+                f"[Monitor]  {'W':<4} {'Status':<6} {'Active':>6} {'Total':>6} {'Latency':>8} {'GPU':>6}",
+                f"[Monitor]  {'─'*48}",
+            ]
             for port in self.ports:
                 try:
                     r = httpx.get(f"http://127.0.0.1:{port}/stats", timeout=1.0)
                     d = r.json()
-                    print(
-                        f"[Monitor] Worker {d['worker_id']} | "
-                        f"Status: {d['status']} | "
-                        f"Active: {d['active_requests']} req | "
-                        f"Total: {d['total_requests']} req | "
-                        f"Avg Latency: {d['avg_latency']}s"
+                    lines.append(
+                        f"[Monitor]  {d['worker_id']:<4} {d['status']:<6} "
+                        f"{d['active_requests']:>6} {d['total_requests']:>6} "
+                        f"{d['avg_latency']:>7.3f}s {d['gpu_utilization']:>5.1f}%"
                     )
                 except Exception:
-                    print(f"[Monitor] Worker on port {port} -- unreachable")
-            print(f"[Monitor] --------------------------------------\n")
+                    lines.append(f"[Monitor]  port {port} -- unreachable")
+            lines.append(f"[Monitor] {'─'*50}")
+            print('\n'.join(lines))
             time.sleep(self.interval)
 
     def stop(self):
@@ -96,26 +105,30 @@ def wait_for_workers(ports, timeout=15):
 
 def main():
     processes = []
-    for worker_id in range(1, 5):
+    for worker_id in range(1, len(WORKER_PORTS) + 1):
         p = subprocess.Popen(
             [sys.executable, "workers/worker_server.py", str(worker_id)],
-            env={**os.environ, "PYTHONPATH": "."},
+            env={**os.environ, "PYTHONPATH": ".", "MAX_CAPACITY": str(NUM_USERS)},
         )
         processes.append(p)
 
-    ports = [8001, 8002, 8003, 8004]
-    wait_for_workers(ports)
+    wait_for_workers(WORKER_PORTS)
 
-    print("\n[Main] All workers ready. Starting NGINX load test...\n")
-    print("NOTE: Make sure NGINX is running with:")
-    print("  C:\\nginx-1.30.0\\nginx.exe -c <absolute-path>\\nginx\\nginx.conf\n")
+    print(f"\n{'='*60}")
+    print(f"  MODE     : NGINX (HTTP)")
+    print(f"  USERS    : {NUM_USERS}    WORKERS : {len(WORKER_PORTS)}")
+    print(f"  NGINX    : http://127.0.0.1:8080")
+    print(f"{'='*60}")
+    print("  NOTE: Make sure NGINX is running with:")
+    print(f"    nginx -c <abs-path>\\nginx\\nginx.conf")
+    print(f"{'='*60}\n")
 
-    heartbeat = HTTPHeartbeatMonitor(ports, interval=2)
-    monitor = HTTPPerformanceMonitor(ports, interval=5)
+    heartbeat = HTTPHeartbeatMonitor(WORKER_PORTS, interval=2)
+    monitor = HTTPPerformanceMonitor(WORKER_PORTS, interval=5)
     heartbeat.start()
     monitor.start()
 
-    run_http_load_test(num_users=40, label="nginx_round_robin")
+    run_http_load_test(num_users=NUM_USERS, label="nginx_round_robin")
 
     heartbeat.stop()
     monitor.stop()
