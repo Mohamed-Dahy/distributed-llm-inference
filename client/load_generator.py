@@ -32,7 +32,8 @@ def simulate_user(scheduler, user_id, results, lock):
         response = scheduler.handle_request(request)
     except Exception:
         response = {"id": user_id, "result": "FAILED", "latency": -1}
-    print(f"[Client] Response {response['id']} | Latency: {response['latency']:.3f}s")
+    if response['result'] == 'FAILED':
+        print(f"[Client] Request {response['id']} FAILED")
     with lock:
         results.append(response)
 

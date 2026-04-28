@@ -17,7 +17,7 @@ from master.monitor import PerformanceMonitor
 from master.heartbeat import HeartbeatMonitor
 from client.load_generator import run_load_test
 
-NUM_USERS = 1000
+NUM_USERS = 100
 NUM_WORKERS = 4
 
 def main():
@@ -26,7 +26,7 @@ def main():
     all_worker_stats = []
 
     for strategy in strategies:
-        workers = [GPUWorker(i) for i in range(NUM_WORKERS)]
+        workers = [GPUWorker(i, max_capacity=NUM_USERS) for i in range(NUM_WORKERS)]
         lb = LoadBalancer(workers, strategy=strategy)
         #lb.remove_worker(0)  # Simulate one worker already down at start
 
@@ -36,10 +36,12 @@ def main():
         scheduler = Scheduler(lb)
         monitor = PerformanceMonitor(workers, interval=5)
         heartbeat = HeartbeatMonitor(workers, interval=2)
+        print(f"\n{'='*60}")
+        print(f"  STRATEGY : {strategy}")
+        print(f"  USERS    : {NUM_USERS}    WORKERS : {NUM_WORKERS}")
+        print(f"{'='*60}\n")
         monitor.start()
         heartbeat.start()
-
-        print(f"\n--- Running strategy: {strategy} ---")
         stats = run_load_test(scheduler, num_users=NUM_USERS, label=strategy)
         all_stats.append(stats)
 

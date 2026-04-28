@@ -1,5 +1,5 @@
 import threading
-from common.models import WorkerDeadException
+from common.models import WorkerDeadException, WorkerOverloadedException
 
 class LoadBalancer:
     def __init__(self, workers, strategy='round_robin'):
@@ -24,7 +24,11 @@ class LoadBalancer:
         return min(self.get_alive_workers(), key=lambda w: w.active_requests)
 
     def _load_aware(self):
-        return min(self.get_alive_workers(), key=lambda w: w.active_requests * w.avg_latency)
+        def score(w):
+            if w.avg_latency == 0.0:
+                return w.active_requests
+            return w.active_requests * w.avg_latency
+        return min(self.get_alive_workers(), key=score)
 
     def get_next_worker(self):
         with self.lock:
@@ -38,12 +42,16 @@ class LoadBalancer:
                 raise Exception(f"Unknown strategy: {self.strategy}")
 
     def dispatch(self, request, max_retries=3):
+        last_reason = None
         for attempt in range(1, max_retries + 1):
             try:
                 worker = self.get_next_worker()
                 return worker.process(request)
             except WorkerDeadException as e:
-                print(f"[LB] Worker {e.worker_id} dead, retrying ({attempt}/{max_retries})...")
+                last_reason = f"Worker {e.worker_id} dead"
+            except WorkerOverloadedException as e:
+                last_reason = f"Worker {e.worker_id} overloaded"
+        print(f"[LB] Request {request.id} FAILED after {max_retries} retries ({last_reason})")
         return {"id": request.id, "result": "FAILED", "latency": -1}
 
     def remove_worker(self, worker_id):
