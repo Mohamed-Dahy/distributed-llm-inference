@@ -17,9 +17,13 @@ def simulate_http_user(user_id, results, lock):
             json=payload,
             timeout=60.0,
         )
-        data = response.json()
         latency = time.time() - start
 
+        if response.status_code != 200:
+            print(f"[HTTP Client] Request {user_id} FAILED: HTTP {response.status_code}")
+            return
+
+        data = response.json()
         with lock:
             results.append(latency)
 

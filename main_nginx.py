@@ -11,7 +11,7 @@ import httpx
 
 from client.http_load_generator import run_http_load_test
 
-NUM_USERS = 50
+NUM_USERS = 5
 WORKER_PORTS = [8001, 8002, 8003, 8004]
 
 
@@ -63,8 +63,8 @@ class HTTPPerformanceMonitor:
             elapsed = time.time() - self._start_time
             lines = [
                 f"\n[Monitor] ──── System Performance  @{elapsed:5.1f}s ────",
-                f"[Monitor]  {'W':<4} {'Status':<6} {'Active':>6} {'Total':>6} {'Latency':>8} {'GPU':>6}",
-                f"[Monitor]  {'─'*48}",
+                f"[Monitor]  {'W':<4} {'Status':<6} {'Active':>6} {'Total':>6} {'Failed':>6} {'Latency':>8} {'GPU':>6}",
+                f"[Monitor]  {'─'*50}",
             ]
             for port in self.ports:
                 try:
@@ -72,12 +72,12 @@ class HTTPPerformanceMonitor:
                     d = r.json()
                     lines.append(
                         f"[Monitor]  {d['worker_id']:<4} {d['status']:<6} "
-                        f"{d['active_requests']:>6} {d['total_requests']:>6} "
+                        f"{d['active_requests']:>6} {d['total_requests']:>6} {d.get('failed_requests', 0):>6} "
                         f"{d['avg_latency']:>7.3f}s {d['gpu_utilization']:>5.1f}%"
                     )
                 except Exception:
                     lines.append(f"[Monitor]  port {port} -- unreachable")
-            lines.append(f"[Monitor] {'─'*50}")
+            lines.append(f"[Monitor] {'─'*52}")
             print('\n'.join(lines))
             time.sleep(self.interval)
 
@@ -85,7 +85,7 @@ class HTTPPerformanceMonitor:
         self.running = False
 
 
-def wait_for_workers(ports, timeout=15):
+def wait_for_workers(ports, timeout=30):
     deadline = time.time() + timeout
     remaining = set(ports)
     while remaining and time.time() < deadline:
@@ -101,6 +101,9 @@ def wait_for_workers(ports, timeout=15):
             time.sleep(0.5)
     if remaining:
         print(f"[Main] WARNING -- workers on ports {remaining} did not respond in time")
+        return False
+    time.sleep(1.0)  # brief stabilization — lets uvicorn threadpool warm up
+    return True
 
 
 def main():
@@ -112,7 +115,11 @@ def main():
         )
         processes.append(p)
 
-    wait_for_workers(WORKER_PORTS)
+    if not wait_for_workers(WORKER_PORTS):
+        print("[Main] Aborting — not all workers are ready. Check for port conflicts from previous runs.")
+        for p in processes:
+            p.terminate()
+        return
 
     print(f"\n{'='*60}")
     print(f"  MODE     : NGINX (HTTP)")
