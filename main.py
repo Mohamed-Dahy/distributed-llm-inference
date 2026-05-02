@@ -1,13 +1,18 @@
 # ── LLM mode ──────────────────────────────────────────────────────────────────
 # Stub mode (default):   PYTHONPATH=. python main.py
-# Real Groq mode:        USE_REAL_LLM=true PYTHONPATH=. python main.py
-#   → Requires GROQ_API_KEY in .env (already configured)
-#   → Set NUM_USERS = 5 for real LLM mode — Groq rate limits can't handle 1000
-#   → Model: llama3-8b-8192 (override with GROQ_MODEL env var)
+# Real Ollama mode:      USE_REAL_LLM=true PYTHONPATH=. python main.py
+#   → Requires Ollama running locally with a model pulled (default: mistral)
+#   → Set NUM_USERS = 5 for real LLM mode — Ollama processes serially per model
+#   → Override model: OLLAMA_MODEL=llama3.2:1b ...
+# All console output is also saved to logs/run_<timestamp>.log
 # ──────────────────────────────────────────────────────────────────────────────
 
 from dotenv import load_dotenv
 load_dotenv()
+
+import os
+import sys
+from datetime import datetime
 
 from workers.gpu_worker import GPUWorker
 from workers.failure_simulator import FailureSimulator
@@ -17,10 +22,36 @@ from master.monitor import PerformanceMonitor
 from master.heartbeat import HeartbeatMonitor
 from client.load_generator import run_load_test
 
-NUM_USERS = 100
+NUM_USERS = 50
 NUM_WORKERS = 4
 
+
+class Tee:
+    """Mirror writes to multiple streams (terminal + log file)."""
+    def __init__(self, *streams):
+        self.streams = streams
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+            s.flush()
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+
+def setup_logging():
+    os.makedirs("logs", exist_ok=True)
+    log_path = f"logs/run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_file = open(log_path, "w", encoding="utf-8")
+    sys.stdout = Tee(sys.__stdout__, log_file)
+    sys.stderr = Tee(sys.__stderr__, log_file)
+    print(f"[Main] Logging to {log_path}")
+    return log_file
+
+
 def main():
+    log_file = setup_logging()
+
     strategies = ['round_robin', 'least_connections', 'load_aware']
     all_stats = []
     all_worker_stats = []
@@ -85,6 +116,8 @@ def main():
                 f"{w['peak_gpu_util']}%"
             )
         print("=" * 78)
+
+    log_file.close()
 
 if __name__ == "__main__":
     main()

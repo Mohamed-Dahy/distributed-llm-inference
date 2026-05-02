@@ -2,27 +2,28 @@ import time
 import threading
 from common.models import Request
 
+# Questions targeted at the Stanford CS229 Machine Learning lectures in rag/Data/
 SAMPLE_QUERIES = [
-    "what is supervised learning and how does it work",
-    "explain the gradient descent optimization algorithm",
-    "what is overfitting and how do you prevent it",
-    "how does a neural network learn from training data",
-    "what is the difference between classification and regression",
-    "explain the backpropagation algorithm in neural networks",
-    "what is regularization and why is it used in machine learning",
-    "how does logistic regression make predictions",
-    "what is a support vector machine and how does it classify data",
-    "explain the bias variance tradeoff in machine learning models",
-    "what is the purpose of a cost function in machine learning",
-    "how does k-means clustering group data points",
-    "what is a decision tree and how does it split features",
-    "explain how principal component analysis reduces dimensionality",
-    "what is cross validation and why is it important for model evaluation",
-    "how does the learning rate affect gradient descent convergence",
-    "what is a convolutional neural network used for",
-    "explain the difference between generative and discriminative models",
-    "what is the expectation maximization algorithm",
-    "how does naive bayes classify text data",
+    "what is supervised learning according to the lecture",
+    "explain how gradient descent works in linear regression",
+    "what is the normal equation and when is it used",
+    "what is overfitting and how does regularization help",
+    "explain the perceptron learning algorithm",
+    "what is logistic regression used for",
+    "describe the Gaussian Discriminant Analysis algorithm",
+    "what is the Naive Bayes classifier and what assumption does it make",
+    "explain the kernel trick in support vector machines",
+    "what is the bias-variance tradeoff",
+    "describe the EM algorithm for Gaussian mixture models",
+    "how does Principal Component Analysis reduce dimensionality",
+    "what is k-means clustering and how does it work",
+    "explain how decision trees split features",
+    "what is reinforcement learning and how does it differ from supervised learning",
+    "describe Markov Decision Processes",
+    "what is value iteration in reinforcement learning",
+    "explain backpropagation in neural networks",
+    "what is cross-validation and why is it important",
+    "describe the VC dimension and learning theory",
 ]
 
 def simulate_user(scheduler, user_id, results, lock):
@@ -32,10 +33,18 @@ def simulate_user(scheduler, user_id, results, lock):
         response = scheduler.handle_request(request)
     except Exception:
         response = {"id": user_id, "result": "FAILED", "latency": -1}
-    if response['result'] == 'FAILED':
-        print(f"[Client] Request {response['id']} FAILED")
+
     with lock:
         results.append(response)
+
+        if response['result'] == 'FAILED':
+            print(f"[Client] Request {response['id']} FAILED")
+        else:
+            result_text = response['result']
+            preview = result_text if len(result_text) <= 400 else result_text[:400] + "..."
+            print(f"\n[Client] ──── Response {response['id']} | Latency: {response['latency']:.3f}s ────")
+            print(f"  Q: {query}")
+            print(f"  A: {preview}\n")
 
 def run_load_test(scheduler, num_users=200, label=''):
     results = []
