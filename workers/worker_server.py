@@ -46,20 +46,39 @@ def process(body: QueryRequest):
 
 
 @app.get("/health")
-def health():
+async def health():
     return {"status": "ok", "worker_id": worker_id}
 
 
 @app.get("/stats")
-def stats():
+async def stats():
     return {
         "worker_id": worker_id,
         "status": "ALIVE" if worker.is_alive else "DEAD",
         "active_requests": worker.active_requests,
         "total_requests": worker.total_requests,
+        "failed_requests": worker.failed_requests,
         "avg_latency": round(worker.avg_latency, 3),
         "gpu_utilization": worker.gpu_utilization,
     }
+
+
+@app.post("/simulate_failure")
+async def simulate_failure():
+    worker.simulate_failure()
+    return {"status": "failed", "worker_id": worker_id}
+
+
+@app.post("/reset")
+async def reset():
+    with worker._lock:
+        worker.is_alive = True
+        worker.active_requests = 0
+        worker.total_requests = 0
+        worker.failed_requests = 0
+        worker.total_latency = 0.0
+        worker.avg_latency = 0.0
+    return {"status": "reset", "worker_id": worker_id}
 
 
 if __name__ == "__main__":

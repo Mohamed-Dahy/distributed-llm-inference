@@ -22,7 +22,7 @@ from master.monitor import PerformanceMonitor
 from master.heartbeat import HeartbeatMonitor
 from client.load_generator import run_load_test
 
-NUM_USERS = 50
+NUM_USERS = 25
 NUM_WORKERS = 4
 
 
