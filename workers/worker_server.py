@@ -84,4 +84,4 @@ async def reset():
 if __name__ == "__main__":
     port = 8000 + worker_id
     print(f"[Worker {worker_id}] Starting on port {port}")
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")

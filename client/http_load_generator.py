@@ -1,9 +1,12 @@
 import threading
 import time
+import os
 
 import httpx
 
 from client.load_generator import SAMPLE_QUERIES
+
+USE_REAL_LLM = os.getenv("USE_REAL_LLM", "false").lower() == "true"
 
 
 def simulate_http_user(user_id, results, lock):
@@ -27,11 +30,21 @@ def simulate_http_user(user_id, results, lock):
         with lock:
             results.append(latency)
 
-        print(
-            f"[HTTP Client] Response {data['id']} | "
-            f"Worker {data['worker_id']} | "
-            f"Latency: {latency:.3f}s"
-        )
+        # Display response with LLM result if using real LLM
+        if USE_REAL_LLM:
+            print(
+                f"\n[HTTP Client] Response {data['id']} | "
+                f"Worker {data['worker_id']} | "
+                f"Latency: {latency:.3f}s"
+            )
+            print(f"[HTTP Client] Query: {query}")
+            print(f"[HTTP Client] Answer: {data['result']}\n")
+        else:
+            print(
+                f"[HTTP Client] Response {data['id']} | "
+                f"Worker {data['worker_id']} | "
+                f"Latency: {latency:.3f}s"
+            )
 
     except Exception as e:
         print(f"[HTTP Client] Request {user_id} FAILED: {e}")

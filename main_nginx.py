@@ -11,8 +11,12 @@ import httpx
 
 from client.http_load_generator import run_http_load_test
 
-NUM_USERS = 5
-WORKER_PORTS = [8001, 8002, 8003, 8004]
+NUM_USERS = 35
+WORKER_PORTS = [8001, 8002]
+
+# Check if using real LLM
+USE_REAL_LLM = os.getenv("USE_REAL_LLM", "false").lower() == "true"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 
 class HTTPHeartbeatMonitor:
@@ -125,6 +129,11 @@ def main():
     print(f"  MODE     : NGINX (HTTP)")
     print(f"  USERS    : {NUM_USERS}    WORKERS : {len(WORKER_PORTS)}")
     print(f"  NGINX    : http://127.0.0.1:8080")
+    if USE_REAL_LLM:
+        llm_mode = "Groq API" if GROQ_API_KEY else "Ollama"
+        print(f"  LLM MODE : {llm_mode} (with response display)")
+    else:
+        print(f"  LLM MODE : STUB (0.2s sleep)")
     print(f"{'='*60}")
     print("  NOTE: Make sure NGINX is running with:")
     print(f"    nginx -c <abs-path>\\nginx\\nginx.conf")
