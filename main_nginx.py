@@ -8,10 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import httpx
-
 from client.http_load_generator import run_http_load_test
 
-NUM_USERS = 35
+NUM_USERS = 30
 WORKER_PORTS = [8001, 8002]
 
 # Check if using real LLM
@@ -129,6 +128,7 @@ def main():
     print(f"  MODE     : NGINX (HTTP)")
     print(f"  USERS    : {NUM_USERS}    WORKERS : {len(WORKER_PORTS)}")
     print(f"  NGINX    : http://127.0.0.1:8080")
+    print(f"  SCHEDULER: Queue-based (4 consumer threads per worker) (NEW!)")
     if USE_REAL_LLM:
         llm_mode = "Groq API" if GROQ_API_KEY else "Ollama"
         print(f"  LLM MODE : {llm_mode} (with response display)")

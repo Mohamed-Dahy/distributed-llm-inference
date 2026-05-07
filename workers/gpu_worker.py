@@ -30,7 +30,11 @@ class GPUWorker:
 
         return round(min(max(util, 0.0), 100.0), 1)
 
-    def process(self, request):
+    def process(self, request, queue_info=None):
+        """
+        Process a request with optional queue awareness.
+        queue_info: dict with {"queue_depth", "wait_time"} for decision making
+        """
         start_time = time.time()
 
         # Reserve slot safely
@@ -44,7 +48,11 @@ class GPUWorker:
             self.active_requests += 1
 
         try:
-            print(f"[Worker {self.id}] Processing request {request.id}")
+            queue_info_str = ""
+            if queue_info:
+                queue_info_str = f" (queue: {queue_info.get('queue_depth', 0)}, wait: {queue_info.get('wait_time', 0):.2f}s)"
+            
+            print(f"[Worker {self.id}] Processing request {request.id}{queue_info_str}")
 
             # Double check worker before expensive task
             with self._lock:

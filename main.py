@@ -18,11 +18,12 @@ from workers.gpu_worker import GPUWorker
 from workers.failure_simulator import FailureSimulator
 from lb.load_balancer import LoadBalancer
 from master.scheduler import Scheduler
+from master.queue_monitor import QueueMonitor
 from master.monitor import PerformanceMonitor
 from master.heartbeat import HeartbeatMonitor
 from client.load_generator import run_load_test
 
-NUM_USERS = 25
+NUM_USERS = 5
 NUM_WORKERS = 4
 
 
@@ -64,37 +65,51 @@ def main():
         sim = FailureSimulator(workers, failure_delay=0.1, num_failures=2)
         sim.start()
 
-        scheduler = Scheduler(lb)
+        # Initialize scheduler with queue-based configuration (NEW!)
+        scheduler = Scheduler(lb, num_consumers=4, request_timeout=30)
+        
+        # Create and start monitoring components
+        queue_monitor = QueueMonitor(scheduler, interval=5)
         monitor = PerformanceMonitor(workers, interval=5)
         heartbeat = HeartbeatMonitor(workers, interval=2)
+        
         print(f"\n{'='*60}")
         print(f"  STRATEGY : {strategy}")
         print(f"  USERS    : {NUM_USERS}    WORKERS : {NUM_WORKERS}")
+        print(f"  QUEUE    : 4 consumer threads, 30s timeout (NEW!)")
         print(f"{'='*60}\n")
+        
+        queue_monitor.start()
         monitor.start()
         heartbeat.start()
+        
         stats = run_load_test(scheduler, num_users=NUM_USERS, label=strategy)
         all_stats.append(stats)
 
+        queue_monitor.stop()
         monitor.stop()
         heartbeat.stop()
+        
+        # Graceful shutdown of scheduler (NEW!)
+        scheduler.shutdown()
 
         worker_stats = monitor.get_worker_stats()
         all_worker_stats.append((strategy, worker_stats))
 
     # ── Strategy comparison table ─────────────────────────────────────────────
     print()
-    print("=" * 60)
+    print("=" * 80)
     print(f"  LOAD BALANCING STRATEGY COMPARISON -- {NUM_USERS} users, {NUM_WORKERS} workers")
-    print("=" * 60)
-    print(f"  {'Strategy':<22}{'Total Time':<13}{'Throughput':<14}{'Avg Latency'}")
-    print(f"  {'-' * 56}")
+    print("=" * 80)
+    print(f"  {'Strategy':<20} {'Time':<8} {'Throughput':<12} {'Avg Latency':<12} {'Queue Wait':<12}")
+    print(f"  {'-' * 76}")
     for s in all_stats:
         total = f"{s['total_time']}s"
-        tput  = f"{s['throughput']} req/s"
-        avg   = f"{s['avg_latency']}s"
-        print(f"  {s['label']:<22}{total:<13}{tput:<14}{avg}")
-    print("=" * 60)
+        tput = f"{s['throughput']} req/s"
+        avg = f"{s['avg_latency']}s"
+        qwait = f"{s.get('avg_queue_wait', 0)}s"  # NEW!
+        print(f"  {s['label']:<20} {total:<8} {tput:<12} {avg:<12} {qwait:<12}")
+    print("=" * 80)
 
     # ── Per-worker stats per strategy ─────────────────────────────────────────
     for strategy, wstats in all_worker_stats:

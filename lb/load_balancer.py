@@ -41,18 +41,30 @@ class LoadBalancer:
             else:
                 raise Exception(f"Unknown strategy: {self.strategy}")
 
-    def dispatch(self, request, max_retries=3):
+    def dispatch(self, request, queue_depth=0, request_wait_time=0, max_retries=3):
+        """
+        Dispatch request to a worker with queue awareness.
+        queue_depth: number of requests waiting in queue
+        request_wait_time: how long this request waited in queue
+        """
         last_reason = None
         for attempt in range(1, max_retries + 1):
             try:
                 worker = self.get_next_worker()
-                return worker.process(request)
+                
+                # Pass queue info to worker for decision making
+                queue_info = {
+                    "queue_depth": queue_depth,
+                    "wait_time": request_wait_time
+                }
+                
+                return worker.process(request, queue_info=queue_info)
             except WorkerDeadException as e:
                 last_reason = f"Worker {e.worker_id} dead"
             except WorkerOverloadedException as e:
                 last_reason = f"Worker {e.worker_id} overloaded"
         print(f"[LB] Request {request.id} FAILED after {max_retries} retries ({last_reason})")
-        return {"id": request.id, "result": "FAILED", "latency": -1}
+        return {"id": request.id, "result": "FAILED", "latency": -1, "worker_id": -1}
 
     def remove_worker(self, worker_id):
         for worker in self.workers:

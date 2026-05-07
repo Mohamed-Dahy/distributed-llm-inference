@@ -7,6 +7,7 @@ import httpx
 from client.load_generator import SAMPLE_QUERIES
 
 USE_REAL_LLM = os.getenv("USE_REAL_LLM", "false").lower() == "true"
+NGINX_URL = os.getenv("NGINX_URL", "http://127.0.0.1:8080")
 
 
 def simulate_http_user(user_id, results, lock):
@@ -16,7 +17,7 @@ def simulate_http_user(user_id, results, lock):
     start = time.time()
     try:
         response = httpx.post(
-            "http://127.0.0.1:8080/process",
+            f"{NGINX_URL}/process",
             json=payload,
             timeout=60.0,
         )
@@ -30,20 +31,24 @@ def simulate_http_user(user_id, results, lock):
         with lock:
             results.append(latency)
 
-        # Display response with LLM result if using real LLM
+        # Display response with queue metrics (NEW!)
         if USE_REAL_LLM:
+            queue_wait = data.get('queue_wait_time', 0)
+            processing = data.get('latency', latency)
             print(
                 f"\n[HTTP Client] Response {data['id']} | "
                 f"Worker {data['worker_id']} | "
-                f"Latency: {latency:.3f}s"
+                f"Queue: {queue_wait:.3f}s | Processing: {processing:.3f}s"
             )
             print(f"[HTTP Client] Query: {query}")
             print(f"[HTTP Client] Answer: {data['result']}\n")
         else:
+            queue_wait = data.get('queue_wait_time', 0)
+            processing = data.get('latency', latency)
             print(
                 f"[HTTP Client] Response {data['id']} | "
                 f"Worker {data['worker_id']} | "
-                f"Latency: {latency:.3f}s"
+                f"Queue: {queue_wait:.3f}s | Processing: {processing:.3f}s"
             )
 
     except Exception as e:

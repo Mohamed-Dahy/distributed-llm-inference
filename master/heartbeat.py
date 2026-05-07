@@ -3,7 +3,7 @@ import time
 
 
 class HeartbeatMonitor:
-    def __init__(self, workers, interval=2):
+    def __init__(self, workers, interval=1):
         self.workers = workers
         self.interval = interval
         self.running = True
