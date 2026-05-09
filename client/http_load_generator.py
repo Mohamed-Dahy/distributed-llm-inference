@@ -1,68 +1,38 @@
 import threading
 import time
-import os
-
-import httpx
 
 from client.load_generator import SAMPLE_QUERIES
 
-USE_REAL_LLM = os.getenv("USE_REAL_LLM", "false").lower() == "true"
-NGINX_URL = os.getenv("NGINX_URL", "http://127.0.0.1:8080")
 
-
-def simulate_http_user(user_id, results, lock):
+def simulate_http_user(user_id: int, scheduler, logger, results: list, lock: threading.Lock):
     query = SAMPLE_QUERIES[user_id % len(SAMPLE_QUERIES)]
-    payload = {"id": user_id, "query": query}
+
+    # Log request sent before dispatching
+    logger.log_sent(user_id, query)
 
     start = time.time()
-    try:
-        response = httpx.post(
-            f"{NGINX_URL}/process",
-            json=payload,
-            timeout=60.0,
-        )
-        latency = time.time() - start
+    data = scheduler.handle_request(user_id, query)
+    latency = time.time() - start
 
-        if response.status_code != 200:
-            print(f"[HTTP Client] Request {user_id} FAILED: HTTP {response.status_code}")
-            return
+    result_text = data.get("result", "ERROR")
+    worker_id = data.get("worker_id", -1)
+    worker_latency_ms = round(data.get("latency", latency) * 1000) if data.get("latency", -1) >= 0 else -1
 
-        data = response.json()
-        with lock:
-            results.append(latency)
+    # Log response received
+    logger.log_response(worker_id, user_id, query, result_text, worker_latency_ms)
 
-        # Display response with queue metrics (NEW!)
-        if USE_REAL_LLM:
-            queue_wait = data.get('queue_wait_time', 0)
-            processing = data.get('latency', latency)
-            print(
-                f"\n[HTTP Client] Response {data['id']} | "
-                f"Worker {data['worker_id']} | "
-                f"Queue: {queue_wait:.3f}s | Processing: {processing:.3f}s"
-            )
-            print(f"[HTTP Client] Query: {query}")
-            print(f"[HTTP Client] Answer: {data['result']}\n")
-        else:
-            queue_wait = data.get('queue_wait_time', 0)
-            processing = data.get('latency', latency)
-            print(
-                f"[HTTP Client] Response {data['id']} | "
-                f"Worker {data['worker_id']} | "
-                f"Queue: {queue_wait:.3f}s | Processing: {processing:.3f}s"
-            )
-
-    except Exception as e:
-        print(f"[HTTP Client] Request {user_id} FAILED: {e}")
+    with lock:
+        results.append(latency)
 
 
-def run_http_load_test(num_users=200, label="nginx_round_robin"):
+def run_http_load_test(num_users: int = 20, label: str = "nginx_distributed", scheduler=None, logger=None) -> dict:
     results = []
     lock = threading.Lock()
 
     threads = []
     start = time.time()
     for i in range(num_users):
-        t = threading.Thread(target=simulate_http_user, args=(i, results, lock))
+        t = threading.Thread(target=simulate_http_user, args=(i, scheduler, logger, results, lock))
         threads.append(t)
         t.start()
 

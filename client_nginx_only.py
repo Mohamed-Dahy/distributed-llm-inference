@@ -1,99 +1,58 @@
 """
-Client-only for multi-laptop NGINX setup.
-Does NOT spawn workers — assumes they're running on separate machines/laptops.
+client_nginx_only.py
+Multi-laptop distributed client.
 
-Run this AFTER workers are already running:
-  PYTHONPATH=. python client_nginx_only.py
+Workflow:
+  1. Wait for all 4 worker laptops to be healthy.
+  2. Start heartbeat, performance, and queue monitors.
+  3. Send NUM_USERS requests through ClientScheduler → NGINX → workers.
+  4. Log every request sent and every response received (console + results file).
+  5. Print run summary; if NUM_USERS >= 1000 evaluate the 30-min SLA.
+
+Environment variables:
+  NGINX_URL           — default http://127.0.0.1:8080
+  WORKER_1..WORKER_4  — direct worker URLs for health checks
+  NUM_USERS           — simulated concurrent users (default 20)
+  NUM_CONSUMERS       — scheduler consumer threads (default 4)
+  REQUEST_TIMEOUT     — seconds before a request times out (default 60)
+  PERF_TARGET_SECONDS — SLA threshold for 1000-request run (default 1800)
 """
 
-import time
 import os
-import threading
-from dotenv import load_dotenv
-load_dotenv()
+import time
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from master.client_support import (
+    ClientScheduler,
+    HTTPHeartbeatMonitor,
+    HTTPPerformanceMonitor,
+    QueueMonitor,
+    ResultsLogger,
+)
 from client.http_load_generator import run_http_load_test
 
-NUM_USERS = 35
-WORKER_PORTS = [8001, 8002]
+# ── Configuration ────────────────────────────────────────────────────────────
 NGINX_URL = os.getenv("NGINX_URL", "http://127.0.0.1:8080")
+NUM_USERS = int(os.getenv("NUM_USERS", 20))
+NUM_CONSUMERS = int(os.getenv("NUM_CONSUMERS", 4))
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 60))
+PERF_TARGET_SECONDS = int(os.getenv("PERF_TARGET_SECONDS", 1800))
 
-USE_REAL_LLM = os.getenv("USE_REAL_LLM", "false").lower() == "true"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-
-
-class HTTPHeartbeatMonitor:
-    def __init__(self, worker_urls, interval=2):
-        self.worker_urls = worker_urls
-        self.interval = interval
-        self.running = True
-        self._last_status = {url: False for url in worker_urls}
-
-    def start(self):
-        t = threading.Thread(target=self._run, daemon=True)
-        t.start()
-
-    def _run(self):
-        while self.running:
-            time.sleep(self.interval)
-            for url in self.worker_urls:
-                try:
-                    r = httpx.get(f"{url}/health", timeout=1.0)
-                    current = r.status_code == 200
-                except Exception:
-                    current = False
-                previous = self._last_status[url]
-                if previous and not current:
-                    print(f"[Heartbeat] ALERT -- Worker {url} is DOWN")
-                elif not previous and current:
-                    print(f"[Heartbeat] Worker {url} is back ONLINE")
-                self._last_status[url] = current
-
-    def stop(self):
-        self.running = False
+WORKER_URLS = [
+    os.getenv("WORKER_1", "http://127.0.0.1:8001"),
+    os.getenv("WORKER_2", "http://127.0.0.1:8002"),
+    os.getenv("WORKER_3", "http://127.0.0.1:8003"),
+    os.getenv("WORKER_4", "http://127.0.0.1:8004"),
+]
 
 
-class HTTPPerformanceMonitor:
-    def __init__(self, worker_urls, interval=5):
-        self.worker_urls = worker_urls
-        self.interval = interval
-        self.running = True
-        self._start_time = time.time()
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-    def start(self):
-        self._start_time = time.time()
-        t = threading.Thread(target=self._report, daemon=True)
-        t.start()
-
-    def _report(self):
-        while self.running:
-            elapsed = time.time() - self._start_time
-            lines = [
-                f"\n[Monitor] ──── System Performance  @{elapsed:5.1f}s ────",
-                f"[Monitor]  {'Worker':<30} {'Status':<6} {'Active':>6} {'Total':>6} {'Failed':>6} {'Latency':>8} {'GPU':>6}",
-                f"[Monitor]  {'-'*80}",
-            ]
-            for url in self.worker_urls:
-                try:
-                    r = httpx.get(f"{url}/stats", timeout=1.0)
-                    d = r.json()
-                    lines.append(
-                        f"[Monitor]  {url:<30} {d['status']:<6} "
-                        f"{d['active_requests']:>6} {d['total_requests']:>6} {d.get('failed_requests', 0):>6} "
-                        f"{d['avg_latency']:>7.3f}s {d['gpu_utilization']:>5.1f}%"
-                    )
-                except Exception:
-                    lines.append(f"[Monitor]  {url:<30} -- unreachable")
-            lines.append(f"[Monitor] {'-'*82}")
-            print('\n'.join(lines))
-            time.sleep(self.interval)
-
-    def stop(self):
-        self.running = False
-
-
-def wait_for_workers(worker_urls, timeout=30):
+def wait_for_workers(worker_urls: list, timeout: int = 30) -> bool:
     deadline = time.time() + timeout
     remaining = set(worker_urls)
     while remaining and time.time() < deadline:
@@ -108,45 +67,77 @@ def wait_for_workers(worker_urls, timeout=30):
         if remaining:
             time.sleep(0.5)
     if remaining:
-        print(f"[Client] WARNING -- workers {remaining} did not respond in time")
+        print(f"[Client] WARNING — workers not ready: {remaining}")
         return False
     time.sleep(1.0)
     return True
 
 
+# ── Main ─────────────────────────────────────────────────────────────────────
+
 def main():
-    # Get worker URLs from environment or use defaults
-    worker_urls = [
-        os.getenv("WORKER_1", "http://127.0.0.1:8001"),
-        os.getenv("WORKER_2", "http://127.0.0.1:8002"),
-    ]
-
-    print(f"\n{'='*80}")
-    print(f"  CLIENT-ONLY MODE (Workers running on separate machines)")
+    print(f"\n{'=' * 80}")
+    print("  CLIENT-ONLY MODE (Workers running on separate machines)")
     print(f"  NGINX      : {NGINX_URL}")
-    print(f"  WORKERS    : {', '.join(worker_urls)}")
+    print(f"  WORKERS    : {', '.join(WORKER_URLS)}")
     print(f"  USERS      : {NUM_USERS}")
-    if USE_REAL_LLM:
-        llm_mode = "Groq API" if GROQ_API_KEY else "Ollama"
-        print(f"  LLM MODE   : {llm_mode} (with response display)")
-    else:
-        print(f"  LLM MODE   : STUB (0.2s sleep)")
-    print(f"{'='*80}\n")
+    print(f"  CONSUMERS  : {NUM_CONSUMERS}")
+    print(f"  TIMEOUT    : {REQUEST_TIMEOUT}s")
+    print(f"{'=' * 80}\n")
 
-    if not wait_for_workers(worker_urls):
+    if not wait_for_workers(WORKER_URLS):
         print("[Client] Aborting — not all workers are ready")
         return
 
-    heartbeat = HTTPHeartbeatMonitor(worker_urls, interval=2)
-    monitor = HTTPPerformanceMonitor(worker_urls, interval=5)
-    heartbeat.start()
-    monitor.start()
+    logger = ResultsLogger(
+        log_dir="logs",
+        nginx_url=NGINX_URL,
+        num_workers=len(WORKER_URLS),
+        num_users=NUM_USERS,
+    )
 
-    run_http_load_test(num_users=NUM_USERS, label="nginx_distributed")
+    scheduler = ClientScheduler(
+        nginx_url=NGINX_URL,
+        num_consumers=NUM_CONSUMERS,
+        request_timeout=REQUEST_TIMEOUT,
+    )
+
+    heartbeat = HTTPHeartbeatMonitor(WORKER_URLS, interval=2)
+    perf_monitor = HTTPPerformanceMonitor(WORKER_URLS, interval=5)
+    queue_monitor = QueueMonitor(scheduler, interval=5)
+
+    heartbeat.start()
+    perf_monitor.start()
+    queue_monitor.start()
+
+    summary = run_http_load_test(
+        num_users=NUM_USERS,
+        label="nginx_distributed",
+        scheduler=scheduler,
+        logger=logger,
+    )
 
     heartbeat.stop()
-    monitor.stop()
-    print("\n[Client] Load test completed")
+    perf_monitor.stop()
+    queue_monitor.stop()
+    scheduler.shutdown()
+
+    # T021: Performance gate — evaluate 30-min SLA for runs ≥ 1000 requests
+    if NUM_USERS >= 1000:
+        total = summary["total_time"]
+        tput = summary["throughput"]
+        lat = summary["avg_latency"]
+        status = "PASS" if total <= PERF_TARGET_SECONDS else "FAIL"
+        perf_line = (
+            f"[PERF] 1000-request target: {status} "
+            f"(total={total:.0f}s, limit={PERF_TARGET_SECONDS}s, "
+            f"throughput={tput} req/s, avg_latency={lat}s)"
+        )
+        logger.log_raw(perf_line)
+
+    logger.close()
+    print(f"\n[Client] Results saved to: {logger.path}")
+    print("[Client] Load test completed")
 
 
 if __name__ == "__main__":
