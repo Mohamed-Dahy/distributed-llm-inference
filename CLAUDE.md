@@ -8,81 +8,105 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -r requirements.txt
 ```
 
-**Stub mode** (default — no external services needed):
+### On each worker laptop (run one per laptop, IDs 1–4)
+
+**Stub mode** (no Ollama needed — for testing):
 ```bash
-PYTHONPATH=. python3 main.py
+PYTHONPATH=. LLM_MODE=stub WORKER_ID=1 python workers/worker_server.py
 ```
 
-**Real LLM mode** (requires `GROQ_API_KEY` in `.env`, keep `NUM_USERS` ≤ 5 due to rate limits):
+**Ollama mode** (real LLM — Ollama must be running):
 ```bash
-USE_REAL_LLM=true PYTHONPATH=. python3 main.py
+ollama serve &
+ollama pull mistral
+PYTHONPATH=. LLM_MODE=ollama WORKER_ID=1 python workers/worker_server.py
 ```
 
-**NGINX mode** (requires NGINX running with `nginx/nginx.conf`; workers spawn automatically):
+### On the client laptop
+
+Edit `nginx/nginx.conf` to set the real IP of each worker laptop, then start NGINX:
 ```bash
-PYTHONPATH=. python3 main_nginx.py
+nginx -c $(pwd)/nginx/nginx.conf   # macOS/Linux
 ```
 
-**Real LLM demo** (5 users, full RAG → Groq pipeline, prints actual answers):
+Run the client:
 ```bash
-USE_REAL_LLM=true PYTHONPATH=. python3 demo_real_llm.py
+export WORKER_1=http://<IP1>:8001
+export WORKER_2=http://<IP2>:8002
+export WORKER_3=http://<IP3>:8003
+export WORKER_4=http://<IP4>:8004
+export NUM_USERS=20
+PYTHONPATH=. python client_nginx_only.py
 ```
 
-**RAG pipeline test** (validates ChromaDB retrieval in isolation):
+Results are saved to `logs/results_YYYYMMDD_HHMMSS.txt`.
+
+For the full multi-laptop setup guide see [specs/001-distributed-llm-cleanup/quickstart.md](specs/001-distributed-llm-cleanup/quickstart.md).
+
+## Failure Simulation
+
 ```bash
-PYTHONPATH=. python3 test_rag.py
+# Kill a worker (stats preserved):
+curl -X POST http://<WORKER_IP>:<PORT>/simulate_failure
+
+# Revive a worker (stats preserved):
+curl -X POST http://<WORKER_IP>:<PORT>/revive
+
+# Reset a worker (revive + clear stats):
+curl -X POST http://<WORKER_IP>:<PORT>/reset
 ```
 
-Scale and fault tolerance are configured at the top of `main.py` via `NUM_USERS`, `NUM_WORKERS`, `lb.remove_worker(0)`, and `FailureSimulator(failure_delay, num_failures)`.
-
-## Two Modes of Operation
-
-The system has two distinct architectures that share the `GPUWorker` core:
-
-**In-process mode** (`main.py`): All components run in one Python process. `LoadBalancer` holds direct references to `GPUWorker` objects and calls `worker.process()` in-process. The three LB strategies (`round_robin`, `least_connections`, `load_aware`) are compared sequentially.
-
-**HTTP/NGINX mode** (`main_nginx.py`): Each worker runs as a separate FastAPI process (`workers/worker_server.py`) on ports 8001–8004. NGINX at port 8080 acts as the actual load balancer, and `client/http_load_generator.py` sends HTTP requests directly to `http://127.0.0.1:8080/process`. The Python LB code is bypassed entirely — NGINX does the routing. Worker endpoints: `GET /health`, `GET /stats`, `POST /process`.
-
-## Request Flow (In-Process Mode)
+## Request Flow (HTTP/NGINX Mode)
 
 ```
 client threads (NUM_USERS × threading.Thread)
-    → Scheduler.handle_request()          [master/scheduler.py — thin logger/delegator]
-    → LoadBalancer.dispatch()             [lb/load_balancer.py — retries up to 3× on WorkerDeadException]
-        → LoadBalancer.get_next_worker()  [lock-protected; selects via strategy]
-        → GPUWorker.process()             [workers/gpu_worker.py]
-            → retrieve_context(query)     [rag/retriever.py — ChromaDB or stub fallback]
-            → run_llm(query, context)     [llm/inference.py — Groq API or 0.2s sleep stub]
-            → post-inference is_alive check
-    → returns dict {"id", "result", "latency"}
+    → ClientScheduler.handle_request()     [master/client_support.py]
+        → enqueues {req_id, query, response_queue}
+        → blocks on response_queue.get(timeout=REQUEST_TIMEOUT)
+    ↓ (consumed by NUM_CONSUMERS persistent _consumer_loop threads)
+    → httpx.post(NGINX_URL/process)        [NGINX routes via least_conn]
+        → Worker laptop (worker_server.py)
+            → GPUWorker.process()          [workers/gpu_worker.py]
+                → retrieve_context(query)  [rag/retriever.py — ChromaDB]
+                → run_llm(query, context)  [llm/inference.py — Ollama or stub]
+            → logs [RECV] on arrival, [RESP] on return
+    → response dict → response_queue.put()
+    → ResultsLogger writes to logs/results_*.txt
 ```
 
 ## Key Design Details
 
-**Two `is_alive` checks in `GPUWorker.process()`** — one at entry, one after `run_llm()` returns. The post-inference check is what actually catches mid-run failures: all threads dispatch almost simultaneously, so the entry check is always passed before `FailureSimulator` fires. Only the post-inference check fires after the 0.2s sleep.
+**`ClientScheduler`** — lives in `master/client_support.py`. Uses `queue.Queue` + `ThreadPoolExecutor` consumer loop. Replaces direct `httpx.post()` calls with a bounded queue that prevents flooding NGINX.
 
-**Failure only produces `"FAILED"` responses when all workers are dead.** With any alive workers remaining, `dispatch()`'s retry loop always finds a survivor. To force visible failures: `remove_worker(0)` + `num_failures=3` kills all 4 workers → `get_alive_workers()` raises `Exception("ALL WORKERS ARE DOWN")` → escapes the retry loop → `simulate_user()` catches it → `result="FAILED"`.
+**`master/client_support.py`** — consolidated module containing all client-side support classes:
+- `ResultsLogger` — writes `[SENT]` and `RESPONDS FROM:` lines to stdout + timestamped file
+- `ClientScheduler` — queue-based HTTP dispatcher to NGINX
+- `HTTPHeartbeatMonitor` — polls `/health` on each worker; logs ALERT/ONLINE transitions
+- `HTTPPerformanceMonitor` — polls `/stats` on each worker; prints a table every 5s
+- `QueueMonitor` — polls `scheduler.get_queue_stats()`; tracks max queue depth
 
-**Thread safety — two separate locks:**
-- `LoadBalancer.lock` — wraps all of `get_next_worker()`, protecting the round-robin index and strategy dispatch.
-- `GPUWorker._lock` — protects `active_requests` (inc/dec) and `avg_latency` rolling average. NOT held during `run_llm()` — only around counter updates.
+**`GPUWorker.process()`** — two `is_alive` checks: one at slot reservation, one after `run_llm()`. Both raise `WorkerDeadException` which propagates as HTTP 500 back to NGINX.
 
-**Worker stats used by LB strategies:**
-- `active_requests` — used by `least_connections` (pick minimum)
-- `avg_latency` — rolling average `(old + new) / 2`; used by `load_aware` (score = `active_requests × avg_latency`)
+**Worker failure via HTTP** — `POST /simulate_failure` sets `is_alive = False` (HTTP 500 on next request). `POST /revive` sets `is_alive = True` (stats preserved). `POST /reset` sets `is_alive = True` and clears all stats.
 
-**`GPUWorker.process()` returns a plain `dict`** (`{"id", "result", "latency"}`), not the `Response` dataclass in `common/models.py`. The `Response` dataclass is currently unused.
+**Performance SLA** — when `NUM_USERS >= 1000`, the client prints `[PERF] PASS/FAIL` against `PERF_TARGET_SECONDS` (default 1800s) after the run.
 
-**RAG module initialises at import time** — `rag/retriever.py` connects to ChromaDB and ingests PDFs from `rag/Data/` when first imported. If `rag/Data/` is empty or missing, it silently falls back to stub retrieval. The ChromaDB store persists at `rag/chroma_db/`.
+**RAG module** — `rag/retriever.py` connects to ChromaDB and ingests PDFs from `rag/Data/` at import time. Store persists at `rag/chroma_db/`. Falls back to stub if `rag/Data/` is empty.
 
-## Stub Extension Points
+## LLM Modes
 
-Replace these function bodies to plug in real retrieval or a real LLM without touching anything else:
-- [rag/retriever.py](rag/retriever.py) → `retrieve_context(query)` — ChromaDB vector search (falls back to stub if no PDFs)
-- [llm/inference.py](llm/inference.py) → `run_llm(query, context)` — Groq API (`USE_REAL_LLM=true`) or 0.2s sleep stub
+`LLM_MODE=stub` → `USE_REAL_LLM=false` → `llm/inference.py` returns a canned response after 0.2s.
+`LLM_MODE=ollama` → `USE_REAL_LLM=true` → `llm/inference.py` tries Groq (if `GROQ_API_KEY` set), then Ollama, then stub fallback.
 
-## Known Quirks
+Override Ollama model/URL: `OLLAMA_MODEL=mistral OLLAMA_URL=http://localhost:11434/api/generate`.
 
-- `SAMPLE_QUERIES` in [client/load_generator.py](client/load_generator.py) is used correctly — the `Request` is now constructed with the cycling query (fixed from an earlier bug where the variable was unused).
-- `nginx/nginx.conf` has Windows-style absolute paths (`C:/nginx-1.30.0/...`) for `error_log` and `pid` — update these if running on Linux/macOS.
-- `FailureSimulator` is a daemon thread — it fires once after `failure_delay` seconds and kills `num_failures` random alive workers, then exits. It does not reset between strategy runs in `main.py` (a new one is created per run).
+## Extension Points
+
+- [rag/retriever.py](rag/retriever.py) → `retrieve_context(query)` — swap in a different vector store
+- [llm/inference.py](llm/inference.py) → `run_llm(query, context)` — swap in a different LLM backend
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+at [specs/001-distributed-llm-cleanup/plan.md](specs/001-distributed-llm-cleanup/plan.md)
+<!-- SPECKIT END -->

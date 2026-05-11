@@ -9,6 +9,7 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 def run_llm(query: str, context: str) -> str:
     if not USE_REAL_LLM:
         return _stub_llm(query, context)
+
     try:
         return _ollama_llm(query, context)
     except Exception as e:
