@@ -110,6 +110,12 @@ class ClientScheduler:
             print(f"[Scheduler] Request #{req_id} TIMEOUT after {self.request_timeout}s")
             return {"id": req_id, "result": "TIMEOUT", "latency": -1, "worker_id": -1, "queue_wait_time": -1}
 
+    _MAX_NGINX_RETRIES = 3
+    # 5xx statuses where re-enqueueing is safe: NGINX exhausted its own retries
+    # and the request either never reached a healthy worker or the worker discarded it.
+    # ReadTimeout is intentionally excluded — the worker may already be processing.
+    _RETRYABLE_STATUSES = {500, 502, 503, 504}
+
     def _consumer_loop(self):
         while self._running:
             try:
@@ -121,6 +127,7 @@ class ClientScheduler:
             response_queue = item["response_queue"]
             enqueued_at = item["enqueued_at"]
             wait_time = time.time() - enqueued_at
+            retries = item.get("retries", 0)
             try:
                 resp = httpx.post(
                     f"{self.nginx_url}/process",
@@ -131,6 +138,38 @@ class ClientScheduler:
                 data = resp.json()
                 data["queue_wait_time"] = round(wait_time, 3)
                 response_queue.put(data)
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                if status in self._RETRYABLE_STATUSES and retries < self._MAX_NGINX_RETRIES:
+                    print(f"[Scheduler] Request #{req_id} HTTP {status} — re-enqueueing (attempt {retries + 1}/{self._MAX_NGINX_RETRIES})")
+                    item["retries"] = retries + 1
+                    self._request_queue.put(item)
+                else:
+                    print(f"[Scheduler] Request #{req_id} ERROR: {e}")
+                    response_queue.put({
+                        "id": req_id,
+                        "result": "ERROR",
+                        "latency": -1,
+                        "worker_id": -1,
+                        "queue_wait_time": round(wait_time, 3),
+                        "error": str(e),
+                    })
+            except httpx.NetworkError as e:
+                # Connection-level failure: request provably never reached a worker.
+                if retries < self._MAX_NGINX_RETRIES:
+                    print(f"[Scheduler] Request #{req_id} network error — re-enqueueing (attempt {retries + 1}/{self._MAX_NGINX_RETRIES}): {e}")
+                    item["retries"] = retries + 1
+                    self._request_queue.put(item)
+                else:
+                    print(f"[Scheduler] Request #{req_id} ERROR: {e}")
+                    response_queue.put({
+                        "id": req_id,
+                        "result": "ERROR",
+                        "latency": -1,
+                        "worker_id": -1,
+                        "queue_wait_time": round(wait_time, 3),
+                        "error": str(e),
+                    })
             except Exception as e:
                 print(f"[Scheduler] Request #{req_id} ERROR: {e}")
                 response_queue.put({
@@ -173,10 +212,13 @@ class HTTPHeartbeatMonitor:
 
     CONSECUTIVE_FAILURES_THRESHOLD = 3
 
-    def __init__(self, worker_urls: list, interval: int = 3, log_dir: str = "logs", timestamp: str = ""):
+    def __init__(self, worker_urls: list, interval: int = 3, log_dir: str = "logs", timestamp: str = "",
+                 on_worker_dead=None, on_worker_alive=None):
         self.worker_urls = worker_urls
         self.interval = interval
         self._running = True
+        self._on_worker_dead = on_worker_dead
+        self._on_worker_alive = on_worker_alive
         # Per-worker state: consecutive failures and whether declared dead
         self._failures: dict = {url: 0 for url in worker_urls}
         self._dead: dict = {url: False for url in worker_urls}
@@ -220,6 +262,11 @@ class HTTPHeartbeatMonitor:
                 self._dead[url] = False
                 self._failures[url] = 0
                 self._log(f"[Heartbeat] {ts} | Worker {url} | ALIVE — worker is back online")
+                if self._on_worker_alive:
+                    try:
+                        self._on_worker_alive(url)
+                    except Exception as e:
+                        self._log(f"[Heartbeat] on_worker_alive callback error: {e}")
             else:
                 self._failures[url] = 0
                 self._log(f"[Heartbeat] {ts} | Worker {url} | ALIVE")
@@ -242,6 +289,11 @@ class HTTPHeartbeatMonitor:
             if self._failures[url] >= self.CONSECUTIVE_FAILURES_THRESHOLD and not self._dead[url]:
                 self._dead[url] = True
                 self._log(f"[Heartbeat] {ts} | Worker {url} | DEAD — {self.CONSECUTIVE_FAILURES_THRESHOLD} consecutive failures")
+                if self._on_worker_dead:
+                    try:
+                        self._on_worker_dead(url)
+                    except Exception as e:
+                        self._log(f"[Heartbeat] on_worker_dead callback error: {e}")
 
     def start(self):
         t = threading.Thread(target=self._run, daemon=True)
