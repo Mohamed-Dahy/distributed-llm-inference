@@ -75,6 +75,8 @@ def process(body: QueryRequest):
 
 @app.get("/health")
 async def health():
+    if not worker.is_alive:
+        raise HTTPException(status_code=503, detail="Worker is dead")
     return {"status": "ok", "worker_id": worker_id}
 
 

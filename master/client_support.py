@@ -24,9 +24,10 @@ class ResultsLogger:
     One file is created per run at logs/results_YYYYMMDD_HHMMSS.txt.
     """
 
-    def __init__(self, log_dir="logs", nginx_url="", num_workers=0, num_users=0):
+    def __init__(self, log_dir="logs", nginx_url="", num_workers=0, num_users=0, timestamp=""):
         os.makedirs(log_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.timestamp = timestamp
         self._path = os.path.join(log_dir, f"results_{timestamp}.txt")
         self._file = open(self._path, "a", buffering=1)
         self._lock = threading.Lock()
@@ -164,38 +165,101 @@ class ClientScheduler:
 
 class HTTPHeartbeatMonitor:
     """
-    Polls /health on each worker URL and logs ALERT/ONLINE transitions.
-    Initial state is None (unknown) to avoid false ALERT on first poll.
+    Sends a heartbeat to each worker every 3 seconds.
+    On first failure: retries immediately.
+    After 3 consecutive failures: worker declared DEAD (still polls every 3s).
+    When a heartbeat succeeds after DEAD: worker announced ALIVE.
     """
 
-    def __init__(self, worker_urls: list, interval: int = 2):
+    CONSECUTIVE_FAILURES_THRESHOLD = 3
+
+    def __init__(self, worker_urls: list, interval: int = 3, log_dir: str = "logs", timestamp: str = ""):
         self.worker_urls = worker_urls
         self.interval = interval
         self._running = True
-        self._last_status: dict = {url: None for url in worker_urls}
+        # Per-worker state: consecutive failures and whether declared dead
+        self._failures: dict = {url: 0 for url in worker_urls}
+        self._dead: dict = {url: False for url in worker_urls}
+        self._initialized: dict = {url: False for url in worker_urls}
+        os.makedirs(log_dir, exist_ok=True)
+        ts = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = os.path.join(log_dir, f"heartbeat_{ts}.txt")
+        self._file = open(log_path, "a", buffering=1)
+        self._lock = threading.Lock()
+        header = f"# Heartbeat log started: {datetime.now().isoformat()} | Workers: {worker_urls}\n"
+        self._file.write(header)
+        print(f"[Heartbeat] Log file: {log_path}")
+
+    def _log(self, line: str):
+        print(line)
+        with self._lock:
+            if not self._file.closed:
+                self._file.write(line + "\n")
+
+    def _ping(self, url: str) -> bool:
+        try:
+            r = httpx.get(f"{url}/health", timeout=1.0)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def _check_worker(self, url: str):
+        alive = self._ping(url)
+        ts = datetime.now().isoformat()
+
+        if not self._initialized[url]:
+            self._initialized[url] = True
+            status = "ALIVE" if alive else "DOWN"
+            self._log(f"[Heartbeat] {ts} | Worker {url} | Initial status: {status}")
+            if not alive:
+                self._failures[url] = 1
+            return
+
+        if alive:
+            if self._dead[url]:
+                self._dead[url] = False
+                self._failures[url] = 0
+                self._log(f"[Heartbeat] {ts} | Worker {url} | ALIVE — worker is back online")
+            else:
+                self._failures[url] = 0
+                self._log(f"[Heartbeat] {ts} | Worker {url} | ALIVE")
+        else:
+            self._failures[url] += 1
+            self._log(f"[Heartbeat] {ts} | Worker {url} | MISSED (consecutive failures: {self._failures[url]})")
+
+            # Immediate retry on first failure
+            if self._failures[url] == 1:
+                time.sleep(0.2)
+                alive = self._ping(url)
+                ts = datetime.now().isoformat()
+                if alive:
+                    self._failures[url] = 0
+                    self._log(f"[Heartbeat] {ts} | Worker {url} | ALIVE (recovered on immediate retry)")
+                else:
+                    self._failures[url] += 1
+                    self._log(f"[Heartbeat] {ts} | Worker {url} | MISSED on immediate retry (consecutive failures: {self._failures[url]})")
+
+            if self._failures[url] >= self.CONSECUTIVE_FAILURES_THRESHOLD and not self._dead[url]:
+                self._dead[url] = True
+                self._log(f"[Heartbeat] {ts} | Worker {url} | DEAD — {self.CONSECUTIVE_FAILURES_THRESHOLD} consecutive failures")
 
     def start(self):
         t = threading.Thread(target=self._run, daemon=True)
         t.start()
 
     def _run(self):
+        for url in self.worker_urls:
+            self._check_worker(url)
         while self._running:
             time.sleep(self.interval)
             for url in self.worker_urls:
-                try:
-                    r = httpx.get(f"{url}/health", timeout=1.0)
-                    current = r.status_code == 200
-                except Exception:
-                    current = False
-                previous = self._last_status[url]
-                if previous is True and not current:
-                    print(f"[Heartbeat] ALERT -- Worker {url} is DOWN")
-                elif previous is False and current:
-                    print(f"[Heartbeat] Worker {url} is back ONLINE")
-                self._last_status[url] = current
+                self._check_worker(url)
 
     def stop(self):
         self._running = False
+        with self._lock:
+            self._file.flush()
+            self._file.close()
 
 
 # ---------------------------------------------------------------------------
